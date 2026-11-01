@@ -129,12 +129,10 @@ def run_backtest(dataset: FactorDataset, params: Params) -> BacktestResult:
         to_long  = compute_turnover(prev_long_w,  long_w)
         to_short = compute_turnover(prev_short_w, short_w)
 
-        # 비용은 next_date 기준 연도의 세율 적용 (리밸런싱 체결 시점)
         cost_long  = _round_trip_cost(to_long,  next_date, params)
         cost_short = _round_trip_cost(to_short, next_date, params)
 
         # Long-Short 수익률: (Long - Short) / 2 로 레버리지 중립화
-        # 비용도 동일하게 /2 스케일 적용 (레버리지 일관성)
         ls_ret = (long_ret - short_ret) / 2.0 - (cost_long + cost_short) / 2.0
 
         ls_ret_dict[next_date]  = ls_ret
@@ -148,7 +146,6 @@ def run_backtest(dataset: FactorDataset, params: Params) -> BacktestResult:
         q: pd.Series(q_returns[q]).sort_index()
         for q in range(1, n_q + 1)
     }
-    # dict 키가 Timestamp여도 빈 dict면 RangeIndex가 생기므로 명시적으로 DatetimeIndex 지정
     ls_series = pd.Series(ls_ret_dict, dtype=float)
     ls_series.index = pd.DatetimeIndex(ls_series.index)
     ls_series = ls_series.sort_index()

@@ -1,13 +1,13 @@
 """월별 KOSPI 전종목 가격/시가총액 데이터 수집.
 
-수집 전략:
-  - 종목 리스트 + 현재 시가총액: FinanceDataReader StockListing('KOSPI')
-  - 종목별 일별 가격 → 월말 리샘플: FinanceDataReader DataReader
-  - 역사적 시가총액 근사: 월말 종가 × 현재 발행주식수
+수집 전략 (기본: FDR):
+  - 종목 리스트: FinanceDataReader StockListing('KOSPI')
+  - 종목별 일별 종가 → 월말 리샘플: FinanceDataReader DataReader
+  - 시가총액 근사: 월말 종가 × 현재 발행주식수
 
 주의:
-  - StockListing 은 현재 상장 종목만 제공 → 상장폐지 종목 미포함 (생존 편향)
-  - 발행주식수는 현재 기준 고정값 → 유상증자/감자 이력 미반영 (근사치)
+  - 현재 상장 종목만 제공 → 상장폐지 종목 미포함 (생존 편향)
+  - 발행주식수는 현재 기준 고정값 → 근사치
 
 캐싱: parquet 저장 → 재실행 시 즉시 로딩.
 """
@@ -32,8 +32,8 @@ class FactorDataset:
 # ── 월말 날짜 생성 ─────────────────────────────────────────────────────────────
 
 def _month_end_dates(start: str, end: str) -> pd.DatetimeIndex:
-    """영업일 기준 월말 날짜 인덱스."""
-    for freq in ("BME", "BM"):   # pandas 버전별 alias 대응
+    """영업일 기준 월말 날짜 인덱스 (pandas 버전 호환)."""
+    for freq in ("BME", "BM"):
         try:
             idx = pd.date_range(start, end, freq=freq)
             if len(idx) > 0:
@@ -55,31 +55,24 @@ def _to_monthly(series: pd.Series) -> pd.Series:
                 return result
         except Exception:
             continue
-    # 최후 fallback: groupby 월 기준 마지막 값
     return series.groupby(pd.Grouper(freq="ME")).last().dropna()
 
 
-# ── KOSPI 전종목 리스트 (FDR) ─────────────────────────────────────────────────
+# ── KOSPI 전종목 리스트 ───────────────────────────────────────────────────────
 
 def _get_kospi_listing() -> pd.DataFrame:
-    """
-    FDR StockListing으로 현재 KOSPI 전 종목 조회.
-    컬럼: Code, Name, Marcap, Stocks
-    """
+    """FDR StockListing으로 현재 KOSPI 전종목 조회."""
     listing = fdr.StockListing("KOSPI")[["Code", "Name", "Marcap", "Stocks"]]
     listing = listing.dropna(subset=["Marcap", "Stocks"])
     listing = listing[listing["Marcap"] > 0]
     return listing.reset_index(drop=True)
 
 
-# ── 종목별 월말 가격 수집 (FDR) ───────────────────────────────────────────────
+# ── 종목별 월말 가격 수집 ─────────────────────────────────────────────────────
 
 def _fetch_monthly_prices(tickers: list[str],
                           start: str, end: str) -> pd.DataFrame:
-    """
-    FDR DataReader 로 종목별 일별 가격 수집 후 월말 리샘플.
-    실패한 종목은 조용히 건너뜀.
-    """
+    """FDR DataReader로 종목별 일별 가격 수집 후 월말 리샘플."""
     n = len(tickers)
     monthly_dict: dict[str, pd.Series] = {}
     fail_count = 0
@@ -144,7 +137,7 @@ def load_dataset(params: Params, cache_dir: str = ".cache") -> FactorDataset:
     shares_map = listing.set_index("Code")["Stocks"].to_dict()
     print(f"      전체 {len(tickers)}개 종목")
 
-    print(f"\n[2/3] 종목별 월별 가격 수집 중 (FDR)...")
+    print(f"\n[2/3] 종목별 월별 가격 수집 중 (FDR, Naver Finance)...")
     print(f"      기간: {params.start} ~ {params.end}")
     prices = _fetch_monthly_prices(tickers, params.start, params.end)
 
@@ -154,7 +147,6 @@ def load_dataset(params: Params, cache_dir: str = ".cache") -> FactorDataset:
             "  pip install finance-datareader --upgrade"
         )
 
-    # 기간 필터 및 0 → NaN
     prices = prices.loc[params.start:params.end]
     prices.replace(0, float("nan"), inplace=True)
 
@@ -162,7 +154,6 @@ def load_dataset(params: Params, cache_dir: str = ".cache") -> FactorDataset:
     shares_series = pd.Series(shares_map).reindex(prices.columns).fillna(0)
     market_caps   = prices.mul(shares_series, axis=1)
 
-    # 캐시 저장
     prices.to_parquet(price_cache)
     market_caps.to_parquet(cap_cache)
     print(f"\n[완료] {prices.shape[0]}개월 × {prices.shape[1]}개 종목, 캐시 저장 ({cache_dir})")

@@ -1,5 +1,6 @@
 .cache/
 results/
+results_csv/
 __pycache__/
 *.pyc
 *.pyo
@@ -8,3 +9,5 @@ __pycache__/
 *.pkl
 .venv/
 venv/
+*.pptx
+~$*
