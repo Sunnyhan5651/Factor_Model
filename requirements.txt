@@ -1,5 +1,6 @@
 pykrx>=1.0.47
-pandas>=1.5.0
+finance-datareader>=0.9.0
+pandas>=2.0.0
 numpy>=1.23.0
 scipy>=1.9.0
 matplotlib>=3.6.0
