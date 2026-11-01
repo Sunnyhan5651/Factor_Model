@@ -1,8 +1,8 @@
-"""월별 KOSPI 가격/시가총액 데이터 수집.
+"""월별 KOSPI 전종목 가격/시가총액 데이터 수집.
 
 수집 전략:
-  - 종목 리스트 + 현재 시가총액: FinanceDataReader StockListing
-  - 종목별 일별 가격 → 월말 리샘플: pykrx get_market_ohlcv_by_date (Naver 백엔드)
+  - 종목 리스트 + 현재 시가총액: FinanceDataReader StockListing('KOSPI')
+  - 종목별 일별 가격 → 월말 리샘플: FinanceDataReader DataReader
   - 역사적 시가총액 근사: 월말 종가 × 현재 발행주식수
 
 주의:
@@ -19,70 +19,96 @@ from pathlib import Path
 
 import pandas as pd
 import FinanceDataReader as fdr
-from pykrx import stock
 
 from .config import Params
 
 
 @dataclass
 class FactorDataset:
-    prices:      pd.DataFrame   # date × ticker (월말 수정종가)
+    prices:      pd.DataFrame   # date × ticker (월말 종가)
     market_caps: pd.DataFrame   # date × ticker (시가총액 근사)
 
 
 # ── 월말 날짜 생성 ─────────────────────────────────────────────────────────────
 
 def _month_end_dates(start: str, end: str) -> pd.DatetimeIndex:
-    """영업일 기준 월말 날짜 인덱스 (Business Month End)."""
-    return pd.date_range(start, end, freq="BME")
+    """영업일 기준 월말 날짜 인덱스."""
+    for freq in ("BME", "BM"):   # pandas 버전별 alias 대응
+        try:
+            idx = pd.date_range(start, end, freq=freq)
+            if len(idx) > 0:
+                return idx
+        except Exception:
+            continue
+    return pd.date_range(start, end, freq="ME")
 
 
-# ── KOSPI 종목 리스트 (FDR) ───────────────────────────────────────────────────
+# ── 월말 리샘플 헬퍼 ──────────────────────────────────────────────────────────
 
-def _get_kospi_listing(universe_size: int) -> pd.DataFrame:
+def _to_monthly(series: pd.Series) -> pd.Series:
+    """일별 시리즈 → 영업일 기준 월말 리샘플 (pandas 버전 호환)."""
+    series.index = pd.to_datetime(series.index)
+    for freq in ("BME", "BM", "ME", "M"):
+        try:
+            result = series.resample(freq).last().dropna()
+            if len(result) > 0:
+                return result
+        except Exception:
+            continue
+    # 최후 fallback: groupby 월 기준 마지막 값
+    return series.groupby(pd.Grouper(freq="ME")).last().dropna()
+
+
+# ── KOSPI 전종목 리스트 (FDR) ─────────────────────────────────────────────────
+
+def _get_kospi_listing() -> pd.DataFrame:
     """
     FDR StockListing으로 현재 KOSPI 전 종목 조회.
-    시가총액 상위 universe_size * 2 개를 수집 대상으로 반환.
     컬럼: Code, Name, Marcap, Stocks
     """
     listing = fdr.StockListing("KOSPI")[["Code", "Name", "Marcap", "Stocks"]]
     listing = listing.dropna(subset=["Marcap", "Stocks"])
     listing = listing[listing["Marcap"] > 0]
-    # 수집 버퍼: 상위 N의 2배 (월별 유니버스 변동 대응)
-    top = listing.nlargest(universe_size * 2, "Marcap").reset_index(drop=True)
-    return top
+    return listing.reset_index(drop=True)
 
 
-# ── 종목별 월말 가격 수집 (pykrx Naver 백엔드) ────────────────────────────────
+# ── 종목별 월말 가격 수집 (FDR) ───────────────────────────────────────────────
 
 def _fetch_monthly_prices(tickers: list[str],
                           start: str, end: str) -> pd.DataFrame:
     """
-    pykrx get_market_ohlcv_by_date 로 종목별 일별 가격 수집 후
-    영업일 기준 월말(BME)로 리샘플링.
+    FDR DataReader 로 종목별 일별 가격 수집 후 월말 리샘플.
+    실패한 종목은 조용히 건너뜀.
     """
-    start_str = start.replace("-", "")
-    end_str   = end.replace("-", "")
     n = len(tickers)
     monthly_dict: dict[str, pd.Series] = {}
+    fail_count = 0
 
     for i, ticker in enumerate(tickers, 1):
-        print(f"  [{i:3d}/{n}] {ticker}", end="\r")
+        print(f"  [{i:4d}/{n}] {ticker}", end="\r")
         try:
-            df = stock.get_market_ohlcv_by_date(start_str, end_str, ticker)
-            if df is None or len(df) < 10:
+            df = fdr.DataReader(ticker, start, end)
+            if df is None or len(df) < 5:
+                fail_count += 1
                 continue
-            # 일별 → 월말 (영업일 기준 마지막 거래일 종가)
-            monthly = df["종가"].resample("BME").last().dropna()
+            monthly = _to_monthly(df["Close"])
             if len(monthly) > 0:
                 monthly_dict[ticker] = monthly
+            else:
+                fail_count += 1
         except Exception:
-            pass
-        time.sleep(0.1)   # Naver rate limit 방지
+            fail_count += 1
+        time.sleep(0.05)
 
-    print()
+    print(f"\n      수집 성공: {len(monthly_dict)}개 / 실패: {fail_count}개")
+
+    if not monthly_dict:
+        return pd.DataFrame()
+
     price_df = pd.DataFrame(monthly_dict)
+    price_df.index = pd.to_datetime(price_df.index)
     price_df.index.name = "date"
+    price_df.sort_index(inplace=True)
     return price_df
 
 
@@ -90,7 +116,7 @@ def _fetch_monthly_prices(tickers: list[str],
 
 def load_dataset(params: Params, cache_dir: str = ".cache") -> FactorDataset:
     """
-    KOSPI 상위 종목 월별 가격·시가총액 수집 후 FactorDataset 반환.
+    KOSPI 전종목 월별 가격·시가총액 수집 후 FactorDataset 반환.
     cache_dir에 parquet 캐시가 있으면 즉시 반환.
     """
     cache_path = Path(cache_dir)
@@ -112,22 +138,27 @@ def load_dataset(params: Params, cache_dir: str = ".cache") -> FactorDataset:
         return FactorDataset(prices=prices, market_caps=market_caps)
 
     # ── 신규 수집 ──────────────────────────────────────────
-    print("[1/3] KOSPI 종목 리스트 조회 중 (FDR)...")
-    listing = _get_kospi_listing(params.universe_size)
-    tickers      = listing["Code"].tolist()
-    shares_map   = listing.set_index("Code")["Stocks"].to_dict()
-    print(f"      수집 대상: {len(tickers)}개 종목")
+    print("[1/3] KOSPI 전종목 리스트 조회 중 (FDR)...")
+    listing    = _get_kospi_listing()
+    tickers    = listing["Code"].tolist()
+    shares_map = listing.set_index("Code")["Stocks"].to_dict()
+    print(f"      전체 {len(tickers)}개 종목")
 
-    print(f"\n[2/3] 종목별 월별 가격 수집 중 (pykrx / Naver)...")
+    print(f"\n[2/3] 종목별 월별 가격 수집 중 (FDR)...")
     print(f"      기간: {params.start} ~ {params.end}")
     prices = _fetch_monthly_prices(tickers, params.start, params.end)
+
+    if prices.empty:
+        raise RuntimeError(
+            "가격 데이터 수집 실패. 네트워크 연결 및 FDR 설치 상태를 확인하세요.\n"
+            "  pip install finance-datareader --upgrade"
+        )
 
     # 기간 필터 및 0 → NaN
     prices = prices.loc[params.start:params.end]
     prices.replace(0, float("nan"), inplace=True)
 
     print(f"\n[3/3] 시가총액 근사값 계산 중...")
-    print(f"      (월별 종가 × 현재 발행주식수, 근사치)")
     shares_series = pd.Series(shares_map).reindex(prices.columns).fillna(0)
     market_caps   = prices.mul(shares_series, axis=1)
 
@@ -144,17 +175,11 @@ def load_dataset(params: Params, cache_dir: str = ".cache") -> FactorDataset:
 def get_universe(market_caps: pd.DataFrame, date: pd.Timestamp,
                  size: int, min_price: float,
                  prices: pd.DataFrame) -> list[str]:
-    """
-    특정 날짜 기준 시가총액 상위 size개 종목 반환.
-    주가 min_price 미만 동전주 제외.
-    """
+    """특정 날짜 기준 시가총액 상위 size개 종목. 동전주(min_price 미만) 제외."""
     if date not in market_caps.index:
         return []
-
     caps   = market_caps.loc[date].dropna()
     closes = prices.loc[date].dropna() if date in prices.index else pd.Series(dtype=float)
-
-    valid = closes[closes >= min_price].index
-    caps  = caps[caps.index.isin(valid)]
-
+    valid  = closes[closes >= min_price].index
+    caps   = caps[caps.index.isin(valid)]
     return caps.nlargest(size).index.tolist()

@@ -59,6 +59,8 @@ def zscore_cross_section(factor_df: pd.DataFrame,
 
 def winsorize(factor_df: pd.DataFrame, pct: float = 0.01) -> pd.DataFrame:
     """상하위 pct% 극단값 winsorization (날짜별 크로스섹션)."""
+    if factor_df.empty or factor_df.shape[1] == 0:
+        return factor_df
     lo = factor_df.quantile(pct, axis=1)
     hi = factor_df.quantile(1 - pct, axis=1)
     return factor_df.clip(lower=lo, upper=hi, axis=0)
