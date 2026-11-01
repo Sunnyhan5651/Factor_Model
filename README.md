@@ -27,7 +27,7 @@ KOSPI 시가총액 상위 200개 종목을 유니버스로 **12-1 Momentum 팩�
 | **백테스트 기간** | 2016-01-01 ~ 2024-12-31 (기본값) |
 | **리밸런싱** | 월말 |
 | **포트폴리오** | 5분위 Long-Short (Q5 Long / Q1 Short, Equal-weight) |
-| **거래비용** | 편도 10bps |
+| **거래비용** | 수수료 1.5bp + 슬리피지 3bp (편도) + 증권거래세 연도별 자동 적용 |
 | **데이터 소스** | pykrx (KRX 정보데이터시스템) |
 
 ---
@@ -105,10 +105,10 @@ z(t, i) = (factor(t, i) - mean_cross(t)) / std_cross(t)
 ### Long-Short 수익률
 
 ```
-LS_return(t) = (Q5_return(t) - Q1_return(t)) / 2 - transaction_cost
+LS_return(t) = (Q5_return(t) - Q1_return(t)) / 2 - (cost_long + cost_short) / 2
 ```
 
-레버리지 중립화를 위해 2로 나누며, 거래비용은 `turnover × cost_bps`로 차감합니다.
+레버리지 중립화를 위해 수익률과 거래비용 모두 2로 나눕니다.
 
 ### 비중 방식
 
@@ -146,10 +146,37 @@ LS_return(t) = (Q5_return(t) - Q1_return(t)) / 2 - transaction_cost
 
 ### 거래비용 모델
 
+편도 회전율(turnover) 1단위 발생 시 매수와 매도가 동시에 일어납니다.
+
 ```
-cost = (turnover_long + turnover_short) / 2 × cost_bps / 10,000
-turnover = 0.5 × Σ|w_new - w_old|  (편도 기준 Bartlett turnover)
+매수 비용 = (수수료 + 슬리피지) / 10,000
+매도 비용 = (수수료 + 슬리피지 + 증권거래세) / 10,000
+
+round_trip_cost = turnover × (매수 비용 + 매도 비용)
+ls_return       = (long_ret - short_ret) / 2 − (cost_long + cost_short) / 2
 ```
+
+| 비용 항목 | 값 | 적용 방향 |
+|----------|-----|---------|
+| 위탁수수료 (키움증권) | 1.5bp | 매수 + 매도 |
+| 슬리피지 (KOSPI 대형주) | 3.0bp | 매수 + 매도 |
+| 증권거래세 | 연도별 자동 | 매도만 |
+
+**증권거래세 연도별 세율 (KOSPI, 농어촌특별세 포함)**
+
+| 기간 | 세율 |
+|------|------|
+| 2016 ~ 2022 | 23bp |
+| 2023 | 20bp |
+| 2024 | 18bp |
+| 2025 ~ | 15bp |
+
+```
+왕복 합계 예시 (2024년 기준):
+  수수료 3.0bp + 슬리피지 6.0bp + 세금 18bp = 27bp
+```
+
+> turnover = 0.5 × Σ|w_new − w_old|  (편도 기준)
 
 ---
 
@@ -212,8 +239,8 @@ python run_backtest.py --universe-size 100
 # 캐시 무시하고 재수집
 python run_backtest.py --no-cache
 
-# 거래비용 변경 (bps)
-python run_backtest.py --cost-bps 20
+# 거래비용 직접 지정
+python run_backtest.py --commission-bps 2.0 --slippage-bps 5.0
 ```
 
 ### 출력 결과
@@ -259,7 +286,7 @@ results/
 | **Survivorship Bias** | 상장폐지 종목이 유니버스에서 일부 누락 |
 | **Equal-weight** | 시가총액 가중치 미적용 (소형주 과대 노출 가능) |
 | **단일 팩터** | 섹터 효과, 시가총액 효과 미중립화 |
-| **거래비용 단순화** | 슬리피지, 시장충격비용 미반영 |
+| **거래비용 단순화** | 대형주 균일 슬리피지 가정, AUM 규모별 시장충격비용 미반영 |
 | **공매도 제약** | Q1 Short이 실제로는 어려울 수 있음 |
 
 ### 개선 방향
