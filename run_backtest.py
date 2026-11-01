@@ -87,6 +87,9 @@ def print_metrics(metrics: dict) -> None:
 
 def print_yearly(ls_returns, ic_series) -> None:
     import pandas as pd
+    if len(ls_returns) == 0:
+        print("\n  [연도별 수익률] 데이터 없음")
+        return
     years = sorted(set(ls_returns.index.year))
     print(f"\n{'─' * 40}")
     print(f"  연도별 Long-Short 수익률")

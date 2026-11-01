@@ -148,8 +148,14 @@ def run_backtest(dataset: FactorDataset, params: Params) -> BacktestResult:
         q: pd.Series(q_returns[q]).sort_index()
         for q in range(1, n_q + 1)
     }
-    ls_series       = pd.Series(ls_ret_dict).sort_index()
-    turnover_series = pd.Series(turnover_dict).sort_index()
+    # dict 키가 Timestamp여도 빈 dict면 RangeIndex가 생기므로 명시적으로 DatetimeIndex 지정
+    ls_series = pd.Series(ls_ret_dict, dtype=float)
+    ls_series.index = pd.DatetimeIndex(ls_series.index)
+    ls_series = ls_series.sort_index()
+
+    turnover_series = pd.Series(turnover_dict, dtype=float)
+    turnover_series.index = pd.DatetimeIndex(turnover_series.index)
+    turnover_series = turnover_series.sort_index()
 
     return BacktestResult(
         quantile_returns=quantile_returns,
