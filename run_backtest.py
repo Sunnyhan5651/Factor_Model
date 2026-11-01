@@ -108,10 +108,13 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--start",         default="2016-01-01")
     ap.add_argument("--end",           default="2024-12-31")
-    ap.add_argument("--universe-size", type=int, default=200)
-    ap.add_argument("--n-quantile",    type=int, default=5)
-    ap.add_argument("--cost-bps",      type=float, default=10.0)
-    ap.add_argument("--no-cache",      action="store_true")
+    ap.add_argument("--universe-size",  type=int,   default=200)
+    ap.add_argument("--n-quantile",     type=int,   default=5)
+    ap.add_argument("--commission-bps", type=float, default=1.5,
+                    help="위탁수수료 편도 (기본 1.5bp, 키움증권 기준)")
+    ap.add_argument("--slippage-bps",   type=float, default=3.0,
+                    help="슬리피지 편도 (기본 3bp, KOSPI 대형주 기준)")
+    ap.add_argument("--no-cache",       action="store_true")
     ap.add_argument("--out",           default=str(_HERE / "results"))
     ap.add_argument("--cache",         default=str(_HERE / ".cache"))
     args = ap.parse_args()
@@ -119,11 +122,12 @@ def main() -> None:
     t0 = time.time()
 
     params = Params(
-        start         = args.start,
-        end           = args.end,
-        universe_size = args.universe_size,
-        n_quantile    = args.n_quantile,
-        cost_bps      = args.cost_bps,
+        start          = args.start,
+        end            = args.end,
+        universe_size  = args.universe_size,
+        n_quantile     = args.n_quantile,
+        commission_bps = args.commission_bps,
+        slippage_bps   = args.slippage_bps,
     )
 
     out_dir = Path(args.out)
@@ -153,7 +157,21 @@ def main() -> None:
     print_yearly(result.ls_returns, ic_series)
 
     avg_to = result.turnover_series.mean()
-    print(f"\n  평균 월별 회전율 (편도): {avg_to:.1%}")
+
+    from factorlib.config import TAX_BY_YEAR, TAX_DEFAULT
+    import numpy as np
+    years = range(int(params.start[:4]), int(params.end[:4]) + 1)
+    avg_tax = float(np.mean([TAX_BY_YEAR.get(y, TAX_DEFAULT) for y in years]))
+    round_trip_bps = (params.commission_bps + params.slippage_bps) * 2 + avg_tax
+
+    print(f"\n  ┌─ 거래비용 내역 (편도 기준) ──────────────────────────")
+    print(f"  │  위탁수수료   : {params.commission_bps:.1f} bp")
+    print(f"  │  슬리피지     : {params.slippage_bps:.1f} bp")
+    print(f"  │  증권거래세   : {avg_tax:.1f} bp (매도, 기간 평균)")
+    print(f"  │  왕복 합계    : {round_trip_bps:.1f} bp")
+    print(f"  └──────────────────────────────────────────────────")
+    print(f"  평균 월별 회전율 (편도): {avg_to:.1%}")
+    print(f"  월평균 비용 드래그     : {avg_to * round_trip_bps / 100:.2f} %")
 
     # ── 4. 시각화 저장 ───────────────────────────────────────────────────────
     print(f"\n[4/4] 차트 저장 중... → {out_dir}")

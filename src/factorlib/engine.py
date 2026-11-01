@@ -13,10 +13,29 @@ from dataclasses import dataclass, field
 import pandas as pd
 import numpy as np
 
-from .config import Params
+from .config import Params, TAX_BY_YEAR, TAX_DEFAULT
 from .data import FactorDataset, get_universe
 from .factors import compute_momentum, zscore_cross_section, winsorize
 from .portfolio import assign_quantiles, build_weights, compute_turnover
+
+
+def _round_trip_cost(turnover: float, date: pd.Timestamp, params: Params) -> float:
+    """
+    편도 회전율(turnover) 1단위에 대한 총 거래비용.
+
+    편도 turnover 1단위 발생 시 아래 거래가 동시에 일어남:
+      매수: commission + slippage
+      매도: commission + slippage + 증권거래세
+
+    증권거래세는 연도별로 다르게 적용 (TAX_BY_YEAR).
+    반환값은 포트폴리오 수익률과 동일한 스케일 (소수점, bps 아님).
+    """
+    tax = TAX_BY_YEAR.get(date.year, TAX_DEFAULT)
+
+    buy_cost  = (params.commission_bps + params.slippage_bps) / 10_000
+    sell_cost = (params.commission_bps + params.slippage_bps + tax) / 10_000
+
+    return turnover * (buy_cost + sell_cost)
 
 
 @dataclass
@@ -109,10 +128,14 @@ def run_backtest(dataset: FactorDataset, params: Params) -> BacktestResult:
         # ── 거래비용 ─────────────────────────────────────────────────────────
         to_long  = compute_turnover(prev_long_w,  long_w)
         to_short = compute_turnover(prev_short_w, short_w)
-        cost     = (to_long + to_short) * params.cost_bps / 10_000
+
+        # 비용은 next_date 기준 연도의 세율 적용 (리밸런싱 체결 시점)
+        cost_long  = _round_trip_cost(to_long,  next_date, params)
+        cost_short = _round_trip_cost(to_short, next_date, params)
 
         # Long-Short 수익률: (Long - Short) / 2 로 레버리지 중립화
-        ls_ret = (long_ret - short_ret) / 2.0 - cost
+        # 비용도 동일하게 /2 스케일 적용 (레버리지 일관성)
+        ls_ret = (long_ret - short_ret) / 2.0 - (cost_long + cost_short) / 2.0
 
         ls_ret_dict[next_date]  = ls_ret
         turnover_dict[next_date] = (to_long + to_short) / 2.0
